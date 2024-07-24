@@ -1,11 +1,9 @@
-# receive bitcoin_watcher
-
 import mysql.connector
 import time
 import requests
 from bit import Key
 
-# Define the API endpoint and your API key if needed
+# Define the API endpoint 
 API_URL = "https://blockchain.info/rawblock/"
 BLOCKCHAIN_INFO_URL = "https://blockchain.info/rawblock/"
 
@@ -76,8 +74,6 @@ def store_transaction(tx, block_number):
         from_address = None
         to_address = None
 
-        # Debug print to check the structure of tx
-        # print("Transaction Data:", tx)
 
         # Ensure the 'inputs' key exists and is not empty
         if 'inputs' in tx and len(tx['inputs']) > 0 and 'prev_out' in tx['inputs'][0] and 'addr' in tx['inputs'][0]['prev_out']:

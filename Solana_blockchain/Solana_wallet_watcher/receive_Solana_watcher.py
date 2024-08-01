@@ -43,12 +43,12 @@ def fetch_current_slot():
     except requests.RequestException as e:
         print(f"Error fetching current slot: {e}")
         return None
-
+# if transcation is my  then stored  saves in my tx all tx is not saved 
 def fetch_block_transactions(slot):
     try:
         response = requests.post(SOLANA_RPC_URL, json={
             "jsonrpc":"2.0","id":1,"method":"getBlock",
-            "params":[slot, {"transactionDetails":"full"}]
+            "params":[slot, {"transactionDetails":"full"}]#if to address is fetch from data table than store in database
         })
         response.raise_for_status()  # Check if request was successful
         data = response.json()

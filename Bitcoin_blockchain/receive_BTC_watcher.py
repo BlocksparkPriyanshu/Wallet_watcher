@@ -1,17 +1,16 @@
+import requests
+import csv
 import mysql.connector
 import time
-import requests
-from bit import Key
 
-# Define the API endpoint 
-API_URL = "https://blockchain.info/rawblock/"
-BLOCKCHAIN_INFO_URL = "https://blockchain.info/rawblock/"
+ADDRESSES_CSV_FILE = "/home/ubuntu/Wallet_watcher/Bitcoin_blockchain/addresses.csv"
+BLOCKCHAIN_INFO_ADDRESS_URL = "https://blockchain.info/rawblock/"
 
 # Connect to MySQL database
 def connect_to_db():
     try:
         db = mysql.connector.connect(
-            host="192.168.0.107",
+            host="192.168.1.10",
             user="root",
             passwd="admin",
             database="blockchain_db"
@@ -25,87 +24,95 @@ def connect_to_db():
 db = connect_to_db()
 cursor = db.cursor()
 
-def latest_block_db():
-    query = "SELECT MAX(block_number) FROM blockchain_db.receive_bitcoin_watcher"
-    cursor.execute(query)
-    result = cursor.fetchone()
-    latest_block = result[0] if result[0] is not None else 0
-    print(f"Latest block in database: {latest_block}")
-    return latest_block
 
-def monitor_blocks():
-    latest_block = latest_block_db()
-    print("Monitoring new blocks...")
+
+def fetch_transaction_details(address):
     try:
-        while True:
-            print("Checking for new blocks...")
-            current_block = requests.get("https://blockchain.info/q/getblockcount").text
+        response = requests.get(f"https://api.blockcypher.com/v1/btc/main/addrs/{address}/full")
+        print(response)
+        address_data = response.json()
+        print(f"Fetched transactions for address: {address}")
+        
+        return address_data.get('txs', [])
+    except requests.RequestException as e:
+        print(f"Error fetching transactions for address {address}: {e}")
+        return []
 
-            for block_number in range(latest_block + 1, int(current_block) + 1):
-                try:
-                    # Fetch the block with full transactions
-                    response = requests.get(f"{BLOCKCHAIN_INFO_URL}{block_number}")
-                    block = response.json()
-                    print(f"Block fetched: {block_number}")
-
-                    if 'tx' in block:
-                        for tx in block['tx']:
-                            print(f"Processing transaction {tx['hash']}")
-                            store_transaction(tx, block_number)
+def process_addresses():
+    print("Processing addresses from CSV file...")
+    try:
+        with open(ADDRESSES_CSV_FILE, mode='r') as file:
+            csv_reader = csv.reader(file)
+            next(csv_reader)
+            for row in csv_reader:
+                if row:
+                    to_address = row[0]
                     
-                    latest_block = block_number
-                except requests.RequestException as e:
-                    print(f"Error fetching block {block_number}: {e}")
-
-            # Sleep for a bit before polling for new blocks again
-            time.sleep(10)
-
+                    print(f"Processing to_address: {to_address}")
+                    # Assuming fetch_transaction_details function fetches transaction details
+                    transactions = fetch_transaction_details(to_address)
+                    # print(transactions)
+                    for tx in transactions:
+                        store_transaction(tx, to_address)
+                        print(f"Stored transaction {tx['hash']} for to_address {to_address}")
+            print("Finished processing addresses.")
+    except FileNotFoundError:
+        print(f"File {ADDRESSES_CSV_FILE} not found.")
     except Exception as e:
-        print(f"Error while monitoring blocks: {e}")
+        print(f"Error processing addresses: {e}")
 
-def store_transaction(tx, block_number):
+
+
+def store_transaction(tx, to_address):
     global cursor, db
     try:
         if not db.is_connected():
             db = connect_to_db()
             cursor = db.cursor()
 
-        # Initialize addresses as None
+        # Set default for from_address
         from_address = None
-        to_address = None
+        block_number = tx.get('block_height')
 
+        # Check if from_address can be extracted
+        if 'inputs' in tx:
+            for input in tx['inputs']:
+                if 'prev_out' in input and 'addr' in input['prev_out']:
+                    from_address = input['prev_out']['addr']
+                    break
 
-        # Ensure the 'inputs' key exists and is not empty
-        if 'inputs' in tx and len(tx['inputs']) > 0 and 'prev_out' in tx['inputs'][0] and 'addr' in tx['inputs'][0]['prev_out']:
-            from_address = tx['inputs'][0]['prev_out']['addr']
-        else:
-            print("Warning: 'from_address' not found in transaction inputs")
-
-        # Ensure the 'out' key exists and is not empty
-        if 'out' in tx and len(tx['out']) > 0 and 'addr' in tx['out'][0]:
-            to_address = tx['out'][0]['addr']
-        else:
-            print("Warning: 'to_address' not found in transaction outputs")
+        # If from_address is still None, set it to a default value or placeholder
+        if not from_address:
+            from_address = "UNKNOWN"
 
         transaction_hash = tx['hash']
-        value = tx['out'][0]['value'] / 100000000  # Convert satoshis to BTC
+        value= None
+        # Ensure 'out' field exists in the transaction
+        if 'out' in tx:
+            value = next((out['value'] for out in tx['out'] if out.get('addr') == to_address), None)
+            if value is not None:
+                value /= 100000000  # Convert satoshis to BTC
 
         sql = """
-        INSERT INTO blockchain_db.receive_bitcoin_watcher (from_address, to_address, transaction_hash, block_number, value)
-        VALUES (%s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE from_address=VALUES(from_address), to_address=VALUES(to_address), value=VALUES(value)
-        """
+                INSERT INTO blockchain_db.receive_bitcoin_watcher (from_address, to_address, transaction_hash, block_number, value)
+                VALUES (%s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE from_address=VALUES(from_address), to_address=VALUES(to_address), value=VALUES(value), transaction_hash=VALUES(transaction_hash)
+                """
+        # print("SQL Query:", sql)
+        print("Data:", (from_address, to_address, transaction_hash, block_number, value))
         cursor.execute(sql, (from_address, to_address, transaction_hash, block_number, value))
         db.commit()
+
         print(f"Stored transaction {transaction_hash} with from_address {from_address} and to_address {to_address}")
-    except mysql.connector.Error as err:
-        print(f"MySQL Error: {err}")
+       
         db = connect_to_db()
         cursor = db.cursor()
     except Exception as e:
         print(f"Error storing transaction: {e}")
 
-# Monitor new blocks and store transaction details
+
+
+# Start processing addresses
 if __name__ == "__main__":
-    monitor_blocks()
+    process_addresses()
     db.close()
